@@ -1,0 +1,135 @@
+﻿@page "/dashboard"
+@using LengthOfStayPredictor.Models
+@using LengthOfStayPredictor.Services
+@inject LosModelService ModelService
+@rendermode InteractiveServer
+
+<PageTitle>Length of Stay — Dashboard</PageTitle>
+
+<h1>📊 Length of Stay Prediction Dashboard</h1>
+
+@if (IsLoading)
+{
+    <div class="d-flex align-items-center gap-2 my-4">
+        <div class="spinner-border text-primary" role="status"></div>
+        <span>Training model and generating predictions…</span>
+    </div>
+}
+else
+{
+    <div class="row mb-4">
+        <div class="col-md-4">
+            <div class="card text-center">
+                <div class="card-body">
+                    <h5 class="card-title">R² Score</h5>
+                    <h2 class="text-success">@RSquared.ToString("F4")</h2>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card text-center">
+                <div class="card-body">
+                    <h5 class="card-title">MAE (days)</h5>
+                    <h2 class="text-warning">@Mae.ToString("F1")</h2>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card text-center">
+                <div class="card-body">
+                    <h5 class="card-title">RMSE (days)</h5>
+                    <h2 class="text-info">@Rmse.ToString("F1")</h2>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    @if (VelocityData.Count > 0)
+    {
+        <h3>Waitlist Velocity Over Time</h3>
+        <ApexChart TItem="LosModelService.MonthlySnapshot" Title="Monthly Simulation" Height="400">
+            <ApexPointSeries TItem="LosModelService.MonthlySnapshot"
+                             Items="VelocityData"
+                             Name="Waitlist Remaining"
+                             SeriesType="SeriesType.Line"
+                             XValue="s => s.Month"
+                             YValue="s => s.WaitlistRemaining" />
+            <ApexPointSeries TItem="LosModelService.MonthlySnapshot"
+                             Items="VelocityData"
+                             Name="Occupancy"
+                             SeriesType="SeriesType.Line"
+                             XValue="s => s.Month"
+                             YValue="s => s.Occupancy" />
+            <ApexPointSeries TItem="LosModelService.MonthlySnapshot"
+                             Items="VelocityData"
+                             Name="Admitted"
+                             SeriesType="SeriesType.Bar"
+                             XValue="s => s.Month"
+                             YValue="s => s.Admitted" />
+        </ApexChart>
+    }
+
+    @if (Waitlist.Count > 0)
+    {
+        <h3 class="mt-4">Waitlist Predictions</h3>
+        <table class="table table-striped">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Diagnosis</th>
+                    <th>Legal Status</th>
+                    <th>Charges</th>
+                    <th>Predicted LOS (days)</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var person in Waitlist)
+                {
+                    <tr>
+                        <td>@person.Id</td>
+                        <td>@person.Diagnosis</td>
+                        <td>@person.LegalStatus</td>
+                        <td>@person.Charges</td>
+                        <td><strong>@person.PredictedLengthOfStayDays.ToString("F0")</strong></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+}
+
+@code {
+    private bool IsLoading = true;
+    private double RSquared;
+    private double Mae;
+    private double Rmse;
+    private List<WaitlistPerson> Waitlist = [];
+    private List<LosModelService.MonthlySnapshot> VelocityData = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        const string dataFile = "historical_data.csv";
+        const int facilityBeds = 200;
+        const int currentOccupancy = 185;
+
+        // Run CPU-intensive ML work off the SignalR circuit thread
+        await Task.Run(() =>
+        {
+            MockDataGenerator.GenerateCsv(dataFile, recordCount: 10_000);
+
+            var metrics = ModelService.TrainModel(dataFile);
+
+            RSquared = metrics.RSquared;
+            Mae = metrics.MeanAbsoluteError;
+            Rmse = metrics.RootMeanSquaredError;
+
+            Waitlist = MockDataGenerator.GenerateMockWaitlist(count: 250);
+            ModelService.PredictWaitlist(Waitlist, facilityBeds);
+
+            VelocityData = LosModelService.SimulateWaitlistVelocityData(
+                Waitlist, facilityBeds, currentOccupancy, monthsToSimulate: 36);
+        });
+
+        IsLoading = false;
+    }
+}
